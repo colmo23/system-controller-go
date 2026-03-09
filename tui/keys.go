@@ -10,9 +10,24 @@ type hostResultMsg monitor.HostResult
 
 // cellRefreshMsg carries an updated HostService cell after a service action.
 type cellRefreshMsg struct {
-	hostIdx int
-	svcIdx  int
-	cell    monitor.HostService
+	hostIdx  int
+	svcIdx   int
+	cell     monitor.HostService
+	action   string // "stop" or "restart"
+	actionOK bool
+}
+
+// clearTransientMsg is sent after a delay to remove a transient status display.
+type clearTransientMsg struct{ hostIdx, svcIdx int }
+
+// transientKey identifies a (host, service) cell.
+type transientKey struct{ hostIdx, svcIdx int }
+
+// transientInfo holds the text to show in place of the real status.
+type transientInfo struct {
+	text     string
+	isResult bool // false = action in progress; true = completed result
+	success  bool // only meaningful when isResult = true
 }
 
 // screen describes which screen is active.

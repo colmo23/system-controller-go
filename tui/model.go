@@ -44,6 +44,8 @@ type Model struct {
 	detailCursor int
 	tableOffset  int
 
+	transients map[transientKey]transientInfo
+
 	width  int
 	height int
 }
@@ -58,6 +60,7 @@ func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUse
 		perHostLoaded:   make([]bool, len(hosts)),
 		hostsRemaining:  len(hosts),
 		unreachable:     make(map[int]string),
+		transients:      make(map[transientKey]transientInfo),
 		grid:            make([][]monitor.HostService, len(hosts)),
 		activeScreen:    screenMain,
 	}
@@ -96,8 +99,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cellRefreshMsg:
 		if msg.hostIdx < len(m.grid) && msg.svcIdx < len(m.grid[msg.hostIdx]) {
-			m.grid[msg.hostIdx][msg.svcIdx] = msg.cell //nolint:all
+			m.grid[msg.hostIdx][msg.svcIdx] = msg.cell
 		}
+		resultText := msg.action + "ed"
+		if msg.action == "stop" {
+			resultText = "stopped"
+		}
+		if !msg.actionOK {
+			resultText = msg.action + " failed"
+		}
+		key := transientKey{msg.hostIdx, msg.svcIdx}
+		m.transients[key] = transientInfo{text: resultText, isResult: true, success: msg.actionOK}
+		hi, si := msg.hostIdx, msg.svcIdx
+		return m, func() tea.Msg {
+			time.Sleep(3 * time.Second)
+			return clearTransientMsg{hi, si}
+		}
+
+	case clearTransientMsg:
+		delete(m.transients, transientKey{msg.hostIdx, msg.svcIdx})
 		return m, nil
 
 	case vimMsg:
@@ -158,12 +178,14 @@ func (m Model) updateMain(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e := m.selectedEntry(); e != nil && e.kind == kindService {
 			host := m.hosts[e.hostIdx].Address
 			svc := m.grid[e.hostIdx][e.svcIdx].ServiceName
+			m.transients[transientKey{e.hostIdx, e.svcIdx}] = transientInfo{text: "stopping..."}
 			return m, m.serviceActionCmd(host, svc, "stop", e.hostIdx, e.svcIdx)
 		}
 	case "t":
 		if e := m.selectedEntry(); e != nil && e.kind == kindService {
 			host := m.hosts[e.hostIdx].Address
 			svc := m.grid[e.hostIdx][e.svcIdx].ServiceName
+			m.transients[transientKey{e.hostIdx, e.svcIdx}] = transientInfo{text: "restarting..."}
 			return m, m.serviceActionCmd(host, svc, "restart", e.hostIdx, e.svcIdx)
 		}
 	}
@@ -213,10 +235,12 @@ func (m Model) updateDetail(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		host := m.hosts[m.detailHost].Address
 		svc := m.grid[m.detailHost][m.detailSvc].ServiceName
+		m.transients[transientKey{m.detailHost, m.detailSvc}] = transientInfo{text: "stopping..."}
 		return m, m.serviceActionCmd(host, svc, "stop", m.detailHost, m.detailSvc)
 	case "t":
 		host := m.hosts[m.detailHost].Address
 		svc := m.grid[m.detailHost][m.detailSvc].ServiceName
+		m.transients[transientKey{m.detailHost, m.detailSvc}] = transientInfo{text: "restarting..."}
 		return m, m.serviceActionCmd(host, svc, "restart", m.detailHost, m.detailSvc)
 	}
 	return m, nil
@@ -255,14 +279,21 @@ func (m Model) serviceActionCmd(host, svc, action string, hostIdx, svcIdx int) t
 		defer mgr.CloseAll()
 
 		cmd := fmt.Sprintf("sudo systemctl %s %s", action, svc)
-		if _, err := mgr.RunCommand(context.Background(), host, cmd); err != nil {
+		_, err := mgr.RunCommand(context.Background(), host, cmd)
+		if err != nil {
 			log.Printf("Service action %q failed for %s on %s: %v", action, svc, host, err)
 		} else {
 			log.Printf("Service action %q succeeded for %s on %s", action, svc, host)
 		}
 
 		cell := monitor.RefreshCell(context.Background(), mgr, host, svc)
-		return cellRefreshMsg{hostIdx: hostIdx, svcIdx: svcIdx, cell: cell}
+		return cellRefreshMsg{
+			hostIdx:  hostIdx,
+			svcIdx:   svcIdx,
+			cell:     cell,
+			action:   action,
+			actionOK: err == nil,
+		}
 	}
 }
 

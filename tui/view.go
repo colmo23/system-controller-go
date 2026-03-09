@@ -10,12 +10,15 @@ import (
 )
 
 var (
-	styleActive   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))   // green
-	styleFailed   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold
-	styleInactive = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow
-	styleNotFound = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))   // dark gray
-	styleUnknown  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))   // gray
-	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))   // red
+	styleActive      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))            // green
+	styleFailed      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold
+	styleInactive    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow
+	styleNotFound    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))            // dark gray
+	styleUnknown     = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))            // gray
+	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))            // red
+	styleInProgress  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow — action in flight
+	styleActionOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true) // green bold — action succeeded
+	styleActionFail  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold — action failed
 
 	styleHeader   = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().Reverse(true)
@@ -95,7 +98,7 @@ func (m Model) renderTable(entries []flatEntry) string {
 		switch e.kind {
 		case kindService:
 			hs := m.grid[e.hostIdx][e.svcIdx]
-			statusStr := styleStatus(hs.Status, hs.ErrorMsg)
+			statusStr := m.renderCellStatus(e.hostIdx, e.svcIdx, hs)
 			row := pad(hs.ServiceName, colSvc) + "  " +
 				pad(hs.HostAddress, colHost) + "  " +
 				statusStr
@@ -150,7 +153,7 @@ func (m Model) viewDetail() string {
 
 	title := fmt.Sprintf(" %s:%s [%s] ",
 		hs.HostAddress, hs.ServiceName,
-		styleStatus(hs.Status, hs.ErrorMsg))
+		m.renderCellStatus(m.detailHost, m.detailSvc, hs))
 
 	var lines []string
 	for i, item := range items {
@@ -181,6 +184,21 @@ func (m Model) viewDetail() string {
 }
 
 // --- Helpers ---
+
+// renderCellStatus returns the styled status string for a cell, showing a
+// transient message (restarting.../stopped/restart failed/etc.) if one is set.
+func (m Model) renderCellStatus(hostIdx, svcIdx int, hs monitor.HostService) string {
+	if t, ok := m.transients[transientKey{hostIdx, svcIdx}]; ok {
+		if !t.isResult {
+			return styleInProgress.Render(t.text)
+		}
+		if t.success {
+			return styleActionOK.Render(t.text)
+		}
+		return styleActionFail.Render(t.text)
+	}
+	return styleStatus(hs.Status, hs.ErrorMsg)
+}
 
 func styleStatus(st monitor.ServiceStatus, errMsg string) string {
 	display := st.Display(errMsg)
