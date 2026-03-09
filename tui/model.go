@@ -51,20 +51,20 @@ type Model struct {
 // NewModel creates an initial Model ready to run.
 func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUser string) Model {
 	return Model{
-		hosts:          hosts,
-		serviceConfigs: serviceConfigs,
-		sshUser:        sshUser,
-		perHostResults: make([]monitor.HostResult, len(hosts)),
-		perHostLoaded:  make([]bool, len(hosts)),
-		unreachable:    make(map[int]string),
-		grid:           make([][]monitor.HostService, len(hosts)),
-		activeScreen:   screenMain,
+		hosts:           hosts,
+		serviceConfigs:  serviceConfigs,
+		sshUser:         sshUser,
+		perHostResults:  make([]monitor.HostResult, len(hosts)),
+		perHostLoaded:   make([]bool, len(hosts)),
+		hostsRemaining:  len(hosts),
+		unreachable:     make(map[int]string),
+		grid:            make([][]monitor.HostService, len(hosts)),
+		activeScreen:    screenMain,
 	}
 }
 
 // Init fires the first async grid refresh.
 func (m Model) Init() tea.Cmd {
-	m.hostsRemaining = len(m.hosts)
 	return m.buildGridCmd()
 }
 
@@ -85,9 +85,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.perHostResults[r.HostIdx] = r
 		m.perHostLoaded[r.HostIdx] = true
 		m.hostsRemaining--
-		if r.Unreachable != "" {
-			log.Printf("Host %s is unreachable: %s", m.hosts[r.HostIdx].Address, r.Unreachable)
-		} else {
+		if r.Unreachable == "" {
 			log.Printf("Host %s data received (%d services)", m.hosts[r.HostIdx].Address, len(r.Cells))
 		}
 		m.rebuildGrid()
@@ -150,7 +148,8 @@ func (m Model) updateMain(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		log.Printf("Full refresh requested")
-		return m, m.spawnRefresh()
+		m, cmd := m.spawnRefresh()
+		return m, cmd
 	case "c":
 		if e := m.selectedEntry(); e != nil {
 			return m, m.sshCmd(m.hosts[e.hostIdx].Address)
@@ -207,7 +206,8 @@ func (m Model) updateDetail(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case "r":
-		return m, m.spawnRefresh()
+		m, cmd := m.spawnRefresh()
+		return m, cmd
 	case "c":
 		return m, m.sshCmd(m.hosts[m.detailHost].Address)
 	case "s":
@@ -238,14 +238,14 @@ func (m Model) buildGridCmd() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m Model) spawnRefresh() tea.Cmd {
+func (m Model) spawnRefresh() (Model, tea.Cmd) {
 	if m.refreshing() {
-		return nil
+		return m, nil
 	}
 	m.hostsRemaining = len(m.hosts)
 	m.perHostLoaded = make([]bool, len(m.hosts))
 	m.perHostResults = make([]monitor.HostResult, len(m.hosts))
-	return m.buildGridCmd()
+	return m, m.buildGridCmd()
 }
 
 func (m Model) serviceActionCmd(host, svc, action string, hostIdx, svcIdx int) tea.Cmd {

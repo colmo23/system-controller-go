@@ -331,7 +331,7 @@ func MergeHostResults(results []HostResult, numHosts int) GridResult {
 		grid[r.HostIdx] = row
 	}
 
-	log.Printf("Grid built: %d rows x %d columns", numHosts, len(serviceNames))
+	log.Printf("Merged %d/%d hosts: %d services", len(results), numHosts, len(serviceNames))
 	return GridResult{
 		ServiceNames:     serviceNames,
 		Grid:             grid,
