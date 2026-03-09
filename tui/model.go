@@ -214,10 +214,7 @@ func (m Model) buildGridCmd() tea.Cmd {
 	configs := m.serviceConfigs
 	user := m.sshUser
 	return func() tea.Msg {
-		mgr := ssh.NewSessionManager(user)
-		result := monitor.BuildGrid(context.Background(), mgr, hosts, configs)
-		mgr.CloseAll()
-		return result
+		return monitor.BuildGrid(context.Background(), user, hosts, configs)
 	}
 }
 

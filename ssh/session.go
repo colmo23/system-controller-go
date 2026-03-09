@@ -15,7 +15,7 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-const dialTimeout = 5 * time.Second
+const dialTimeout = 2 * time.Second
 
 // SessionManager holds persistent SSH clients keyed by host address.
 type SessionManager struct {

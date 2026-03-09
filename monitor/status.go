@@ -6,6 +6,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/gobwas/glob"
 
@@ -228,41 +229,68 @@ func FetchStatuses(ctx context.Context, mgr *ssh.SessionManager, host string, na
 	return cells
 }
 
-// BuildGrid probes all hosts, expands globs, and fetches service statuses.
-func BuildGrid(ctx context.Context, mgr *ssh.SessionManager, hosts []config.Host, serviceConfigs []config.ServiceConfig) GridResult {
-	log.Printf("Building grid for %d hosts, %d service configs", len(hosts), len(serviceConfigs))
-
-	unreachable := make(map[int]string)
-	allExpanded := make([][]struct {
+// hostProbeResult holds the per-host output of the parallel probe phase.
+type hostProbeResult struct {
+	index       int
+	unreachable string // non-empty if the host could not be reached
+	expanded    []struct {
 		Name   string
 		Config config.ServiceConfig
-	}, len(hosts))
-	var allServiceNames []string
-	seen := make(map[string]bool)
+	}
+}
+
+// BuildGrid probes all hosts in parallel, expands globs, and fetches service statuses.
+// Each host gets its own SSH SessionManager so connections are fully concurrent.
+func BuildGrid(ctx context.Context, sshUser string, hosts []config.Host, serviceConfigs []config.ServiceConfig) GridResult {
+	log.Printf("Building grid for %d hosts, %d service configs", len(hosts), len(serviceConfigs))
+
+	// --- Phase 1: probe all hosts concurrently ---
+	probeResults := make([]hostProbeResult, len(hosts))
+	var wg sync.WaitGroup
 
 	for i, host := range hosts {
-		host := host
-		if _, err := mgr.RunCommand(ctx, host.Address, "true"); err != nil {
-			reason := ClassifySSHError(fmt.Sprintf("%v", err))
-			log.Printf("Host %s is unreachable (%s): %v", host.Address, reason, err)
-			unreachable[i] = reason
-			allExpanded[i] = nil
-			continue
-		}
-		log.Printf("Host %s is reachable", host.Address)
+		wg.Add(1)
+		go func(i int, host config.Host) {
+			defer wg.Done()
+			mgr := ssh.NewSessionManager(sshUser)
+			defer mgr.CloseAll()
 
-		expanded := ExpandGlobs(ctx, mgr, &host, serviceConfigs)
-		allExpanded[i] = expanded
-		for _, e := range expanded {
+			if _, err := mgr.RunCommand(ctx, host.Address, "true"); err != nil {
+				reason := ClassifySSHError(fmt.Sprintf("%v", err))
+				log.Printf("Host %s is unreachable (%s): %v", host.Address, reason, err)
+				probeResults[i] = hostProbeResult{index: i, unreachable: reason}
+				return
+			}
+			log.Printf("Host %s is reachable", host.Address)
+
+			expanded := ExpandGlobs(ctx, mgr, &host, serviceConfigs)
+			probeResults[i] = hostProbeResult{index: i, expanded: expanded}
+		}(i, host)
+	}
+
+	wg.Wait()
+
+	// Collect ordered union of service names (preserve first-seen order per host index).
+	seen := make(map[string]bool)
+	var allServiceNames []string
+	for _, r := range probeResults {
+		for _, e := range r.expanded {
 			if !seen[e.Name] {
 				seen[e.Name] = true
 				allServiceNames = append(allServiceNames, e.Name)
 			}
 		}
 	}
-
 	log.Printf("Service columns after glob expansion: %v", allServiceNames)
 
+	unreachable := make(map[int]string)
+	for _, r := range probeResults {
+		if r.unreachable != "" {
+			unreachable[r.index] = r.unreachable
+		}
+	}
+
+	// --- Phase 2: fetch statuses for all reachable hosts concurrently ---
 	grid := make([][]HostService, len(hosts))
 
 	for i, host := range hosts {
@@ -270,59 +298,63 @@ func BuildGrid(ctx context.Context, mgr *ssh.SessionManager, hosts []config.Host
 			grid[i] = nil
 			continue
 		}
+		wg.Add(1)
+		go func(i int, host config.Host) {
+			defer wg.Done()
+			mgr := ssh.NewSessionManager(sshUser)
+			defer mgr.CloseAll()
 
-		expanded := allExpanded[i]
-		expandedMap := make(map[string]config.ServiceConfig, len(expanded))
-		for _, e := range expanded {
-			expandedMap[e.Name] = e.Config
-		}
-
-		// Collect service names this host has
-		var hostSvcNames []string
-		for _, name := range allServiceNames {
-			if _, ok := expandedMap[name]; ok {
-				hostSvcNames = append(hostSvcNames, name)
-			}
-		}
-
-		cells := FetchStatuses(ctx, mgr, host.Address, hostSvcNames)
-		statusMap := make(map[string]HostService, len(cells))
-		for _, c := range cells {
-			statusMap[c.ServiceName] = c
-		}
-
-		var row []HostService
-		for _, svcName := range allServiceNames {
-			cfg, exists := expandedMap[svcName]
-			if !exists {
-				continue
-			}
-			cell, ok := statusMap[svcName]
-			if !ok {
-				cell = HostService{HostAddress: host.Address, ServiceName: svcName, Status: StatusUnknown}
+			expanded := probeResults[i].expanded
+			expandedMap := make(map[string]config.ServiceConfig, len(expanded))
+			for _, e := range expanded {
+				expandedMap[e.Name] = e.Config
 			}
 
-			if cell.Status == StatusNotFound {
-				log.Printf("Skipping %s on %s (not found)", svcName, host.Address)
-				continue
+			var hostSvcNames []string
+			for _, name := range allServiceNames {
+				if _, ok := expandedMap[name]; ok {
+					hostSvcNames = append(hostSvcNames, name)
+				}
 			}
 
-			// Augment config with standard commands
-			augCfg := cfg
-			augCfg.Commands = append(append([]string{}, cfg.Commands...),
-				"systemctl status "+svcName,
-				"journalctl -u "+svcName,
-			)
-			cell.Config = augCfg
-			row = append(row, cell)
-		}
-		grid[i] = row
+			cells := FetchStatuses(ctx, mgr, host.Address, hostSvcNames)
+			statusMap := make(map[string]HostService, len(cells))
+			for _, c := range cells {
+				statusMap[c.ServiceName] = c
+			}
+
+			var row []HostService
+			for _, svcName := range allServiceNames {
+				cfg, exists := expandedMap[svcName]
+				if !exists {
+					continue
+				}
+				cell, ok := statusMap[svcName]
+				if !ok {
+					cell = HostService{HostAddress: host.Address, ServiceName: svcName, Status: StatusUnknown}
+				}
+				if cell.Status == StatusNotFound {
+					log.Printf("Skipping %s on %s (not found)", svcName, host.Address)
+					continue
+				}
+				augCfg := cfg
+				augCfg.Commands = append(append([]string{}, cfg.Commands...),
+					"systemctl status "+svcName,
+					"journalctl -u "+svcName,
+				)
+				cell.Config = augCfg
+				row = append(row, cell)
+			}
+			grid[i] = row
+		}(i, host)
 	}
+
+	wg.Wait()
 
 	log.Printf("Grid built: %d rows x %d columns", len(grid), len(allServiceNames))
 	return GridResult{
-		ServiceNames:    allServiceNames,
-		Grid:            grid,
+		ServiceNames:     allServiceNames,
+		Grid:             grid,
 		UnreachableHosts: unreachable,
 	}
 }
