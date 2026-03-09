@@ -5,6 +5,9 @@ import (
 	"system-controller/monitor"
 )
 
+// hostResultMsg carries the result of probing a single host.
+type hostResultMsg monitor.HostResult
+
 // cellRefreshMsg carries an updated HostService cell after a service action.
 type cellRefreshMsg struct {
 	hostIdx int

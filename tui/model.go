@@ -25,7 +25,13 @@ type Model struct {
 	serviceConfigs []config.ServiceConfig
 	sshUser        string
 
-	// Grid state
+	// Raw per-host data, populated incrementally as hosts report in.
+	// nil entry = host not yet loaded.
+	perHostResults  []monitor.HostResult
+	perHostLoaded   []bool
+	hostsRemaining  int // counts down to 0; refreshing = hostsRemaining > 0
+
+	// Derived grid state, rebuilt after each hostResultMsg.
 	grid         [][]monitor.HostService
 	serviceNames []string
 	unreachable  map[int]string
@@ -38,9 +44,8 @@ type Model struct {
 	detailCursor int
 	tableOffset  int
 
-	refreshing bool
-	width      int
-	height     int
+	width  int
+	height int
 }
 
 // NewModel creates an initial Model ready to run.
@@ -49,16 +54,22 @@ func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUse
 		hosts:          hosts,
 		serviceConfigs: serviceConfigs,
 		sshUser:        sshUser,
+		perHostResults: make([]monitor.HostResult, len(hosts)),
+		perHostLoaded:  make([]bool, len(hosts)),
 		unreachable:    make(map[int]string),
+		grid:           make([][]monitor.HostService, len(hosts)),
 		activeScreen:   screenMain,
 	}
 }
 
 // Init fires the first async grid refresh.
 func (m Model) Init() tea.Cmd {
-	m.refreshing = true
+	m.hostsRemaining = len(m.hosts)
 	return m.buildGridCmd()
 }
+
+// refreshing returns true while any host probe is still in flight.
+func (m Model) refreshing() bool { return m.hostsRemaining > 0 }
 
 // Update handles all messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -69,13 +80,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case monitor.GridResult:
-		log.Printf("Refresh complete: %d services, %d unreachable hosts",
-			len(msg.ServiceNames), len(msg.UnreachableHosts))
-		m.serviceNames = msg.ServiceNames
-		m.grid = msg.Grid
-		m.unreachable = msg.UnreachableHosts
-		m.refreshing = false
+	case hostResultMsg:
+		r := monitor.HostResult(msg)
+		m.perHostResults[r.HostIdx] = r
+		m.perHostLoaded[r.HostIdx] = true
+		m.hostsRemaining--
+		if r.Unreachable != "" {
+			log.Printf("Host %s is unreachable: %s", m.hosts[r.HostIdx].Address, r.Unreachable)
+		} else {
+			log.Printf("Host %s data received (%d services)", m.hosts[r.HostIdx].Address, len(r.Cells))
+		}
+		m.rebuildGrid()
 		if n := len(m.flatEntries()); n > 0 && m.cursor >= n {
 			m.cursor = n - 1
 		}
@@ -210,19 +225,26 @@ func (m Model) updateDetail(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 // --- Commands (async side-effects) ---
 
 func (m Model) buildGridCmd() tea.Cmd {
-	hosts := m.hosts
-	configs := m.serviceConfigs
-	user := m.sshUser
-	return func() tea.Msg {
-		return monitor.BuildGrid(context.Background(), user, hosts, configs)
+	cmds := make([]tea.Cmd, len(m.hosts))
+	for i, host := range m.hosts {
+		i, host := i, host
+		user := m.sshUser
+		configs := m.serviceConfigs
+		cmds[i] = func() tea.Msg {
+			r := monitor.ProbeHost(context.Background(), user, i, host, configs)
+			return hostResultMsg(r)
+		}
 	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) spawnRefresh() tea.Cmd {
-	if m.refreshing {
+	if m.refreshing() {
 		return nil
 	}
-	m.refreshing = true
+	m.hostsRemaining = len(m.hosts)
+	m.perHostLoaded = make([]bool, len(m.hosts))
+	m.perHostResults = make([]monitor.HostResult, len(m.hosts))
 	return m.buildGridCmd()
 }
 
@@ -330,6 +352,21 @@ func (m *Model) detailItems(hostIdx, svcIdx int) []detailItem {
 		}
 	}
 	return items
+}
+
+// rebuildGrid recomputes serviceNames, grid, and unreachable from perHostResults.
+// Called after each hostResultMsg so the display updates incrementally.
+func (m *Model) rebuildGrid() {
+	loaded := make([]monitor.HostResult, 0, len(m.hosts))
+	for i, ok := range m.perHostLoaded {
+		if ok {
+			loaded = append(loaded, m.perHostResults[i])
+		}
+	}
+	result := monitor.MergeHostResults(loaded, len(m.hosts))
+	m.serviceNames = result.ServiceNames
+	m.grid = result.Grid
+	m.unreachable = result.UnreachableHosts
 }
 
 // clampOffset keeps the selected row visible in the scrollable table.

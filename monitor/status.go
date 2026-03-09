@@ -229,131 +229,111 @@ func FetchStatuses(ctx context.Context, mgr *ssh.SessionManager, host string, na
 	return cells
 }
 
-// hostProbeResult holds the per-host output of the parallel probe phase.
-type hostProbeResult struct {
-	index       int
-	unreachable string // non-empty if the host could not be reached
-	expanded    []struct {
-		Name   string
-		Config config.ServiceConfig
-	}
+// HostResult holds the fully resolved data for a single host.
+type HostResult struct {
+	HostIdx     int
+	Unreachable string                // non-empty if the host could not be reached
+	Cells       map[string]HostService // service name → augmented HostService
 }
 
-// BuildGrid probes all hosts in parallel, expands globs, and fetches service statuses.
-// Each host gets its own SSH SessionManager so connections are fully concurrent.
+// ProbeHost connects to one host, expands globs, fetches statuses, and returns
+// the result. It creates and closes its own SessionManager.
+func ProbeHost(ctx context.Context, sshUser string, hostIdx int, host config.Host, serviceConfigs []config.ServiceConfig) HostResult {
+	mgr := ssh.NewSessionManager(sshUser)
+	defer mgr.CloseAll()
+
+	if _, err := mgr.RunCommand(ctx, host.Address, "true"); err != nil {
+		reason := ClassifySSHError(fmt.Sprintf("%v", err))
+		log.Printf("Host %s is unreachable (%s): %v", host.Address, reason, err)
+		return HostResult{HostIdx: hostIdx, Unreachable: reason}
+	}
+	log.Printf("Host %s is reachable", host.Address)
+
+	expanded := ExpandGlobs(ctx, mgr, &host, serviceConfigs)
+
+	names := make([]string, len(expanded))
+	for i, e := range expanded {
+		names[i] = e.Name
+	}
+
+	fetched := FetchStatuses(ctx, mgr, host.Address, names)
+
+	cells := make(map[string]HostService, len(fetched))
+	for i, cell := range fetched {
+		if cell.Status == StatusNotFound {
+			log.Printf("Skipping %s on %s (not found)", cell.ServiceName, host.Address)
+			continue
+		}
+		cfg := expanded[i].Config
+		cfg.Commands = append(append([]string{}, cfg.Commands...),
+			"systemctl status "+cell.ServiceName,
+			"journalctl -u "+cell.ServiceName,
+		)
+		cell.Config = cfg
+		cells[cell.ServiceName] = cell
+	}
+
+	return HostResult{HostIdx: hostIdx, Cells: cells}
+}
+
+// BuildGrid probes all hosts in parallel and returns the combined GridResult.
+// Prefer calling ProbeHost per host via tea.Batch for incremental UI updates.
 func BuildGrid(ctx context.Context, sshUser string, hosts []config.Host, serviceConfigs []config.ServiceConfig) GridResult {
 	log.Printf("Building grid for %d hosts, %d service configs", len(hosts), len(serviceConfigs))
 
-	// --- Phase 1: probe all hosts concurrently ---
-	probeResults := make([]hostProbeResult, len(hosts))
+	results := make([]HostResult, len(hosts))
 	var wg sync.WaitGroup
-
 	for i, host := range hosts {
 		wg.Add(1)
 		go func(i int, host config.Host) {
 			defer wg.Done()
-			mgr := ssh.NewSessionManager(sshUser)
-			defer mgr.CloseAll()
-
-			if _, err := mgr.RunCommand(ctx, host.Address, "true"); err != nil {
-				reason := ClassifySSHError(fmt.Sprintf("%v", err))
-				log.Printf("Host %s is unreachable (%s): %v", host.Address, reason, err)
-				probeResults[i] = hostProbeResult{index: i, unreachable: reason}
-				return
-			}
-			log.Printf("Host %s is reachable", host.Address)
-
-			expanded := ExpandGlobs(ctx, mgr, &host, serviceConfigs)
-			probeResults[i] = hostProbeResult{index: i, expanded: expanded}
+			results[i] = ProbeHost(ctx, sshUser, i, host, serviceConfigs)
 		}(i, host)
 	}
-
 	wg.Wait()
 
-	// Collect ordered union of service names (preserve first-seen order per host index).
-	seen := make(map[string]bool)
-	var allServiceNames []string
-	for _, r := range probeResults {
-		for _, e := range r.expanded {
-			if !seen[e.Name] {
-				seen[e.Name] = true
-				allServiceNames = append(allServiceNames, e.Name)
-			}
-		}
-	}
-	log.Printf("Service columns after glob expansion: %v", allServiceNames)
+	return MergeHostResults(results, len(hosts))
+}
 
+// MergeHostResults combines a slice of HostResults into a GridResult.
+// Service names are sorted alphabetically for a stable column order.
+func MergeHostResults(results []HostResult, numHosts int) GridResult {
 	unreachable := make(map[int]string)
-	for _, r := range probeResults {
-		if r.unreachable != "" {
-			unreachable[r.index] = r.unreachable
-		}
-	}
+	seen := make(map[string]bool)
+	var serviceNames []string
 
-	// --- Phase 2: fetch statuses for all reachable hosts concurrently ---
-	grid := make([][]HostService, len(hosts))
-
-	for i, host := range hosts {
-		if _, ok := unreachable[i]; ok {
-			grid[i] = nil
+	for _, r := range results {
+		if r.Unreachable != "" {
+			unreachable[r.HostIdx] = r.Unreachable
 			continue
 		}
-		wg.Add(1)
-		go func(i int, host config.Host) {
-			defer wg.Done()
-			mgr := ssh.NewSessionManager(sshUser)
-			defer mgr.CloseAll()
-
-			expanded := probeResults[i].expanded
-			expandedMap := make(map[string]config.ServiceConfig, len(expanded))
-			for _, e := range expanded {
-				expandedMap[e.Name] = e.Config
+		for name := range r.Cells {
+			if !seen[name] {
+				seen[name] = true
+				serviceNames = append(serviceNames, name)
 			}
+		}
+	}
+	sort.Strings(serviceNames)
 
-			var hostSvcNames []string
-			for _, name := range allServiceNames {
-				if _, ok := expandedMap[name]; ok {
-					hostSvcNames = append(hostSvcNames, name)
-				}
-			}
-
-			cells := FetchStatuses(ctx, mgr, host.Address, hostSvcNames)
-			statusMap := make(map[string]HostService, len(cells))
-			for _, c := range cells {
-				statusMap[c.ServiceName] = c
-			}
-
-			var row []HostService
-			for _, svcName := range allServiceNames {
-				cfg, exists := expandedMap[svcName]
-				if !exists {
-					continue
-				}
-				cell, ok := statusMap[svcName]
-				if !ok {
-					cell = HostService{HostAddress: host.Address, ServiceName: svcName, Status: StatusUnknown}
-				}
-				if cell.Status == StatusNotFound {
-					log.Printf("Skipping %s on %s (not found)", svcName, host.Address)
-					continue
-				}
-				augCfg := cfg
-				augCfg.Commands = append(append([]string{}, cfg.Commands...),
-					"systemctl status "+svcName,
-					"journalctl -u "+svcName,
-				)
-				cell.Config = augCfg
+	grid := make([][]HostService, numHosts)
+	for _, r := range results {
+		if r.Unreachable != "" {
+			grid[r.HostIdx] = nil
+			continue
+		}
+		var row []HostService
+		for _, name := range serviceNames {
+			if cell, ok := r.Cells[name]; ok {
 				row = append(row, cell)
 			}
-			grid[i] = row
-		}(i, host)
+		}
+		grid[r.HostIdx] = row
 	}
 
-	wg.Wait()
-
-	log.Printf("Grid built: %d rows x %d columns", len(grid), len(allServiceNames))
+	log.Printf("Grid built: %d rows x %d columns", numHosts, len(serviceNames))
 	return GridResult{
-		ServiceNames:     allServiceNames,
+		ServiceNames:     serviceNames,
 		Grid:             grid,
 		UnreachableHosts: unreachable,
 	}

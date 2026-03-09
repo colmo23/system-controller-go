@@ -47,7 +47,7 @@ func (m Model) viewMain() string {
 	var body string
 	if len(entries) == 0 {
 		msg := "No data. Press 'r' to refresh or check your config files."
-		if m.refreshing {
+		if m.refreshing() {
 			msg = "Refreshing..."
 		}
 		body = styleBorder.Width(m.contentWidth()).Render(msg)
@@ -131,7 +131,7 @@ func (m Model) renderTable(entries []flatEntry) string {
 
 func (m Model) renderStatusBar(args ...bool) string {
 	var text string
-	if m.refreshing {
+	if m.refreshing() {
 		text = "Refreshing..."
 	} else {
 		text = "r:refresh  Enter:detail  c:ssh  s:stop  t:restart  q:quit"
