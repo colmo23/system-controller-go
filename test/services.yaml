@@ -1,0 +1,26 @@
+services:
+  nginx*:
+    files:
+      - /etc/nginx/nginx.conf
+      - /var/log/nginx/error.log
+    commands:
+      - nginx -T
+  postgresql*:
+    files:
+      - /etc/postgresql/14/main/postgresql.conf
+    commands:
+      - pg_isready
+  redis*:
+    commands:
+      - redis-cli ping
+  s*:
+    commands:
+      - top -b -n 1
+    files:
+      - /etc/passwd
+  c*:
+    commands:
+      - ls
+      - whoami
+    files:
+      - /etc/passwd
