@@ -15,7 +15,7 @@ import (
 func main() {
 	args := os.Args[1:]
 
-	var logFile, sshUser string
+	var logFile, sshUser, pager string
 	var positional []string
 
 	for i := 0; i < len(args); i++ {
@@ -34,6 +34,13 @@ func main() {
 			}
 			i++
 			sshUser = args[i]
+		case "--pager":
+			if i+1 >= len(args) {
+				printUsage()
+				os.Exit(1)
+			}
+			i++
+			pager = args[i]
 		default:
 			positional = append(positional, args[i])
 		}
@@ -73,7 +80,7 @@ func main() {
 	}
 	log.Printf("Loaded %d service configs", len(serviceConfigs))
 
-	model := tui.NewModel(hosts, serviceConfigs, sshUser)
+	model := tui.NewModel(hosts, serviceConfigs, sshUser, pager)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)

@@ -24,6 +24,7 @@ type Model struct {
 	hosts          []config.Host
 	serviceConfigs []config.ServiceConfig
 	sshUser        string
+	pager          string
 
 	// Raw per-host data, populated incrementally as hosts report in.
 	// nil entry = host not yet loaded.
@@ -51,11 +52,15 @@ type Model struct {
 }
 
 // NewModel creates an initial Model ready to run.
-func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUser string) Model {
+func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUser, pager string) Model {
+	if pager == "" {
+		pager = "less"
+	}
 	return Model{
 		hosts:          hosts,
 		serviceConfigs: serviceConfigs,
 		sshUser:        sshUser,
+		pager:          pager,
 		perHostResults: make([]monitor.HostResult, len(hosts)),
 		perHostLoaded:  make([]bool, len(hosts)),
 		hostsRemaining: len(hosts),
@@ -121,8 +126,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case vimMsg:
-		c := exec.Command("vim", "-R", msg.path)
-		return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return m, tea.ExecProcess(m.pagerCmd(msg.path), func(err error) tea.Msg {
 			os.Remove(msg.path)
 			return nil
 		})
@@ -295,6 +299,15 @@ func (m Model) serviceActionCmd(host, svc, action string, hostIdx, svcIdx int) t
 			actionOK: err == nil,
 		}
 	}
+}
+
+// pagerCmd returns the exec.Cmd to open file in the configured pager.
+// vim gets -R (read-only); all other pagers are called as "<pager> <file>".
+func (m Model) pagerCmd(file string) *exec.Cmd {
+	if m.pager == "vim" {
+		return exec.Command("vim", "-R", file)
+	}
+	return exec.Command(m.pager, file)
 }
 
 func (m Model) sshCmd(host string) tea.Cmd {

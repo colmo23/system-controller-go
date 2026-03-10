@@ -136,13 +136,19 @@ func (m Model) renderTable(entries []flatEntry) string {
 }
 
 func (m Model) renderStatusBar(args ...bool) string {
-	var text string
+	keys := "r:refresh  Enter:detail  c:ssh  s:stop  t:restart  q:quit"
 	if m.refreshing() {
-		text = "Refreshing..."
-	} else {
-		text = "r:refresh  Enter:detail  c:ssh  s:stop  t:restart  q:quit"
+		keys = "Refreshing..."
 	}
-	return styleMuted.Render(text)
+
+	summary := m.gridSummary()
+
+	// Pad keys left, summary right, filling the terminal width.
+	gap := m.width - lipgloss.Width(keys) - lipgloss.Width(summary)
+	if gap < 1 {
+		gap = 1
+	}
+	return styleMuted.Render(keys) + strings.Repeat(" ", gap) + summary
 }
 
 // --- Detail screen ---
@@ -187,6 +193,46 @@ func (m Model) viewDetail() string {
 }
 
 // --- Helpers ---
+
+// gridSummary returns a short "Xup Ydown Zhosts" summary for the status bar.
+func (m Model) gridSummary() string {
+	if len(m.grid) == 0 && !m.refreshing() {
+		return ""
+	}
+
+	hostsUp := 0
+	hostsDown := len(m.unreachable)
+	svcsActive := 0
+	svcsDown := 0 // failed + inactive
+
+	for i, row := range m.grid {
+		if _, ok := m.unreachable[i]; ok {
+			continue
+		}
+		if m.perHostLoaded != nil && i < len(m.perHostLoaded) && !m.perHostLoaded[i] {
+			continue // not yet loaded, don't count
+		}
+		hostsUp++
+		for _, hs := range row {
+			switch hs.Status {
+			case monitor.StatusActive:
+				svcsActive++
+			case monitor.StatusFailed, monitor.StatusInactive:
+				svcsDown++
+			}
+		}
+	}
+
+	hostPart := fmt.Sprintf("hosts %s/%s",
+		styleActive.Render(fmt.Sprintf("%d", hostsUp)),
+		styleError.Render(fmt.Sprintf("%d", hostsDown)),
+	)
+	svcPart := fmt.Sprintf("svcs %s/%s",
+		styleActive.Render(fmt.Sprintf("%d", svcsActive)),
+		styleError.Render(fmt.Sprintf("%d", svcsDown)),
+	)
+	return styleMuted.Render(hostPart + "  " + svcPart)
+}
 
 // renderCellStatus returns the styled status string for a cell, showing a
 // transient message (restarting.../stopped/restart failed/etc.) if one is set.
