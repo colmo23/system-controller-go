@@ -27,9 +27,9 @@ type Model struct {
 
 	// Raw per-host data, populated incrementally as hosts report in.
 	// nil entry = host not yet loaded.
-	perHostResults  []monitor.HostResult
-	perHostLoaded   []bool
-	hostsRemaining  int // counts down to 0; refreshing = hostsRemaining > 0
+	perHostResults []monitor.HostResult
+	perHostLoaded  []bool
+	hostsRemaining int // counts down to 0; refreshing = hostsRemaining > 0
 
 	// Derived grid state, rebuilt after each hostResultMsg.
 	grid         [][]monitor.HostService
@@ -53,16 +53,16 @@ type Model struct {
 // NewModel creates an initial Model ready to run.
 func NewModel(hosts []config.Host, serviceConfigs []config.ServiceConfig, sshUser string) Model {
 	return Model{
-		hosts:           hosts,
-		serviceConfigs:  serviceConfigs,
-		sshUser:         sshUser,
-		perHostResults:  make([]monitor.HostResult, len(hosts)),
-		perHostLoaded:   make([]bool, len(hosts)),
-		hostsRemaining:  len(hosts),
-		unreachable:     make(map[int]string),
-		transients:      make(map[transientKey]transientInfo),
-		grid:            make([][]monitor.HostService, len(hosts)),
-		activeScreen:    screenMain,
+		hosts:          hosts,
+		serviceConfigs: serviceConfigs,
+		sshUser:        sshUser,
+		perHostResults: make([]monitor.HostResult, len(hosts)),
+		perHostLoaded:  make([]bool, len(hosts)),
+		hostsRemaining: len(hosts),
+		unreachable:    make(map[int]string),
+		transients:     make(map[transientKey]transientInfo),
+		grid:           make([][]monitor.HostService, len(hosts)),
+		activeScreen:   screenMain,
 	}
 }
 
@@ -402,7 +402,7 @@ func (m *Model) rebuildGrid() {
 
 // clampOffset keeps the selected row visible in the scrollable table.
 func (m *Model) clampOffset() {
-	visible := m.height - 4
+	visible := m.height - 6
 	if visible < 1 {
 		visible = 1
 	}

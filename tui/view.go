@@ -10,15 +10,15 @@ import (
 )
 
 var (
-	styleActive      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))            // green
-	styleFailed      = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold
-	styleInactive    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow
-	styleNotFound    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))            // dark gray
-	styleUnknown     = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))            // gray
-	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))            // red
-	styleInProgress  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow — action in flight
-	styleActionOK    = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true) // green bold — action succeeded
-	styleActionFail  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold — action failed
+	styleActive     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))            // green
+	styleFailed     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold
+	styleInactive   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow
+	styleNotFound   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))            // dark gray
+	styleUnknown    = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))            // gray
+	styleError      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))            // red
+	styleInProgress = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))            // yellow — action in flight
+	styleActionOK   = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Bold(true) // green bold — action succeeded
+	styleActionFail = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true) // red bold — action failed
 
 	styleHeader   = lipgloss.NewStyle().Bold(true)
 	styleSelected = lipgloss.NewStyle().Reverse(true)
@@ -72,8 +72,11 @@ func (m Model) renderTable(entries []flatEntry) string {
 		styleHeader.Render(pad("Host", colHost)) + "  " +
 		styleHeader.Render("Status")
 
-	// Visible window
-	visible := m.height - 4
+	// Visible window.
+	// Total lines on screen: top border(1) + header(1) + separator(1) +
+	// visible rows + bottom border(1) + status bar(1) = visible + 5.
+	// Must fit in m.height, so visible = m.height - 5.
+	visible := m.height - 6
 	if visible < 1 {
 		visible = 1
 	}
@@ -88,7 +91,7 @@ func (m Model) renderTable(entries []flatEntry) string {
 
 	var lines []string
 	lines = append(lines, header)
-	lines = append(lines, strings.Repeat("─", colSvc+colHost+colStatus+4))
+	lines = append(lines, strings.Repeat("─", m.contentWidth()-2))
 
 	for i := start; i < end; i++ {
 		e := entries[i]
